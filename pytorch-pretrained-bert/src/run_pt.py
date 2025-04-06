@@ -153,6 +153,7 @@ def train(args):
     ]
     t_total = num_train_steps
 
+    args.fp16 = False
     if args.fp16:
         try:
             from apex.optimizers import FP16_Optimizer

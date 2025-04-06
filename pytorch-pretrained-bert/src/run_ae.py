@@ -24,9 +24,12 @@ import numpy as np
 import torch
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
 
-from pytorch_pretrained_bert.tokenization import BertTokenizer
-from pytorch_pretrained_bert.modeling import PreTrainedBertModel, BertModel
-from pytorch_pretrained_bert.optimization import BertAdam
+# from pytorch_pretrained_bert.tokenization import BertTokenizer
+# from pytorch_pretrained_bert.modeling import BertPreTrainedModel, BertModel
+# from pytorch_pretrained_bert.optimization import BertAdam
+
+from transformers import BertTokenizer, BertPreTrainedModel, BertModel, get_scheduler
+from torch.optim import AdamW
 
 import absa_data_utils as data_utils
 from absa_data_utils import ABSATokenizer
@@ -43,17 +46,18 @@ def warmup_linear(x, warmup=0.002):
     return 1.0 - x
 
 
-class BertForSequenceLabeling(PreTrainedBertModel):
+class BertForSequenceLabeling(BertPreTrainedModel):
     def __init__(self, config, num_labels=3):
         super(BertForSequenceLabeling, self).__init__(config)
         self.num_labels = num_labels
         self.bert = BertModel(config)
         self.dropout = torch.nn.Dropout(config.hidden_dropout_prob)
         self.classifier = torch.nn.Linear(config.hidden_size, num_labels)
-        self.apply(self.init_bert_weights)
+        self.init_weights()
 
     def forward(self, input_ids, token_type_ids=None, attention_mask=None, labels=None):
-        sequence_output, _ = self.bert(input_ids, token_type_ids, attention_mask, output_all_encoded_layers=False)
+        outputs = self.bert(input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask)
+        sequence_output = outputs.last_hidden_state
         sequence_output = self.dropout(sequence_output)
         logits = self.classifier(sequence_output)
 
@@ -111,23 +115,26 @@ def train(args):
         valid_losses=[]
     #<<<<< end of validation declaration
 
-    model = BertForSequenceLabeling.from_pretrained(modelconfig.MODEL_ARCHIVE_MAP[args.bert_model], num_labels = len(label_list) )
+    model = BertForSequenceLabeling.from_pretrained(modelconfig.MODEL_ARCHIVE_MAP[args.bert_model], num_labels=len(label_list))
     model.cuda()
     # Prepare optimizer
-    param_optimizer = [(k, v) for k, v in model.named_parameters() if v.requires_grad==True]
-    param_optimizer = [n for n in param_optimizer if 'pooler' not in n[0]]
-    no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
-    optimizer_grouped_parameters = [
-        {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay': 0.01},
-        {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
-        ]
-    t_total = num_train_steps
-    optimizer = BertAdam(optimizer_grouped_parameters,
-                         lr=args.learning_rate,
-                         warmup=args.warmup_proportion,
-                         t_total=t_total)
+    # param_optimizer = [(k, v) for k, v in model.named_parameters() if v.requires_grad==True]
+    # param_optimizer = [n for n in param_optimizer if 'pooler' not in n[0]]
+    # no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
+    # optimizer_grouped_parameters = [
+    #     {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay': 0.01},
+    #     {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
+    #     ]
+    # t_total = num_train_steps
+    # optimizer = BertAdam(optimizer_grouped_parameters,
+    #                      lr=args.learning_rate,
+    #                      warmup=args.warmup_proportion,
+    #                      t_total=t_total)
 
-    global_step = 0
+    optimizer = AdamW(model.parameters(), lr=args.learning_rate)
+    scheduler = get_scheduler("linear", optimizer=optimizer, num_warmup_steps=int(args.warmup_proportion * num_train_steps), num_training_steps=num_train_steps)
+
+    #global_step = 0
     model.train()
     for _ in range(args.num_train_epochs):
         for step, batch in enumerate(train_dataloader):
@@ -136,12 +143,15 @@ def train(args):
             loss = model(input_ids, segment_ids, input_mask, label_ids)
             loss.backward()
 
-            lr_this_step = args.learning_rate * warmup_linear(global_step/t_total, args.warmup_proportion)
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = lr_this_step
+            # lr_this_step = args.learning_rate * warmup_linear(global_step/t_total, args.warmup_proportion)
+            # for param_group in optimizer.param_groups:
+            #     param_group['lr'] = lr_this_step
+            # optimizer.step()
+            # optimizer.zero_grad()
+            # global_step += 1
             optimizer.step()
+            scheduler.step()
             optimizer.zero_grad()
-            global_step += 1
             #>>>> perform validation at the end of each epoch .
         if args.do_valid:
             model.eval()

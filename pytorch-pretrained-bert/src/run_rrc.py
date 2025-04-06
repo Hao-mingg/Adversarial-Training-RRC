@@ -13,6 +13,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Copyright 2018 The Google AI Language Team Authors and The HuggingFace Inc. team and authors from University of Illinois at Chicago.
+# Copyright (c) 2018, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 import os
 import logging
@@ -34,6 +48,7 @@ from transformers import (
     get_linear_schedule_with_warmup,
 )
 from torch.optim import AdamW
+from bat_rrc import BertForQAWithAdversarialTraining
 
 import squad_data_utils as data_utils
 import modelconfig
@@ -59,6 +74,20 @@ def train(args):
 
     train_features = data_utils.convert_examples_to_features(
         train_examples, tokenizer, args.max_seq_length, args.doc_stride, args.max_query_length, is_training=True)
+    
+    # # 🔍 DEBUG: Check for bad label positions
+    # for i, f in enumerate(train_features):
+    #     if f.start_position < 0 or f.start_position >= args.max_seq_length:
+    #         logger.warning(f"Bad start_position at example {i}: {f.start_position}")
+    #     if f.end_position < 0 or f.end_position >= args.max_seq_length:
+    #         logger.warning(f"Bad end_position at example {i}: {f.end_position}")
+
+    valid_features = []
+    for f in train_features:
+        if 0 <= f.start_position < args.max_seq_length and 0 <= f.end_position < args.max_seq_length:
+            valid_features.append(f)
+    train_features = valid_features
+
     logger.info("***** Running training *****")
     logger.info("  Num orig examples = %d", len(train_examples))
     logger.info("  Num split examples = %d", len(train_features))
@@ -102,7 +131,8 @@ def train(args):
         valid_losses=[]
     #<<<<< end of validation declaration
     if not args.bert_model.endswith(".pt"):
-        model = BertForQuestionAnswering.from_pretrained(modelconfig.MODEL_ARCHIVE_MAP[args.bert_model] )
+        model = BertForQAWithAdversarialTraining.from_pretrained(modelconfig.MODEL_ARCHIVE_MAP[args.bert_model], dropout=dropout, epsilon=epsilon)
+        # model = BertForQuestionAnswering.from_pretrained(modelconfig.MODEL_ARCHIVE_MAP[args.bert_model])
     else:
         model = torch.load(args.bert_model)
 
@@ -153,7 +183,7 @@ def train(args):
         for step, batch in enumerate(train_dataloader):
             batch = tuple(t.cuda() for t in batch)
             input_ids, segment_ids, input_mask, start_positions, end_positions = batch
-            # loss = model(input_ids, segment_ids, input_mask, start_positions, end_positions)
+
             output = model(
                 input_ids=input_ids,
                 attention_mask=input_mask,
@@ -161,7 +191,25 @@ def train(args):
                 start_positions=start_positions,
                 end_positions=end_positions,
             )
-            loss = output.loss
+
+            # loss = output.loss
+
+            loss, adv_loss = output
+            loss = 0.5 * loss + 0.5 * adv_loss # adver
+
+            # # If output is a tuple, unpack manually
+            # if isinstance(output, tuple):
+            #     if model.training:  # Training mode: Expect (total_loss, adv_loss)
+            #         loss = output[0]  # Normal loss
+            #         adv_loss = output[1]  # Adversarial loss
+            #         final_loss = 0.5 * loss + 0.5 * adv_loss  # Weighted sum of both losses
+            #         loss = final_loss
+            #     else:  # Evaluation mode: Expect (logits_start, logits_end)
+            #         logits_start, logits_end = output
+            #         loss = None  # No loss in evaluation mode
+            # else:
+            #     loss = output.loss  # If return_dict=True, this works
+
 
             if args.gradient_accumulation_steps > 1:
                 loss = loss / args.gradient_accumulation_steps
@@ -195,7 +243,8 @@ def train(args):
                         start_positions=start_positions,
                         end_positions=end_positions,
                     )
-                    loss = output.loss  # Extract the scalar loss
+                    loss = output
+                    #loss = output.loss  # Extract the scalar loss
                     losses.append(loss.item() * input_ids.size(0))
 
                     #losses.append(loss.data.item()*input_ids.size(0) )
@@ -245,10 +294,21 @@ def test(args):  # Load a trained model that you have fine-tuned (we assume eval
         
         with torch.no_grad():
             #batch_start_logits, batch_end_logits = model(input_ids, segment_ids, input_mask)
-            output = model(input_ids=input_ids, token_type_ids=segment_ids,
-                                                      attention_mask=input_mask)
-            batch_start_logits=output.start_logits
-            batch_end_logits=output.end_logits
+            
+
+
+            # output = model(input_ids=input_ids, token_type_ids=segment_ids,
+            #                                           attention_mask=input_mask)
+            # batch_start_logits=output.start_logits
+            # batch_end_logits=output.end_logits
+
+            #adv
+            batch_start_logits, batch_end_logits = model(
+                input_ids=input_ids,
+                token_type_ids=segment_ids,
+                attention_mask=input_mask
+            )
+
 
         for i, example_index in enumerate(example_indices):
             start_logits = batch_start_logits[i].detach().cpu().tolist()
