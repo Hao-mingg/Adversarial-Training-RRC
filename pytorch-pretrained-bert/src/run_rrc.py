@@ -64,6 +64,15 @@ def warmup_linear(x, warmup=0.002):
     return 1.0 - x
 
 def train(args):
+
+    # for params tuning results
+    # dropout = args.dropout
+    # epsilon = args.epsilon
+    # args.bert_model = "laptop_pt"
+
+    dropout = 0
+    epsilon = 0
+
     args.train_batch_size=int(args.train_batch_size / args.gradient_accumulation_steps)
 
     tokenizer = BertTokenizer.from_pretrained(modelconfig.MODEL_ARCHIVE_MAP[args.bert_model] )
@@ -419,6 +428,11 @@ def main():
     parser.add_argument('--n_best_size',
                         type=int,
                         default=20)
+    
+    parser.add_argument("--dropout", type=float, default=0.0, help="Dropout rate.")
+
+    parser.add_argument("--epsilon", type=float, default=5.0, help="Epsilon for adversarial training.")
+
 
 
     args = parser.parse_args()
